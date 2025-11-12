@@ -1,8 +1,9 @@
 package signed
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -47,7 +48,6 @@ func (s *Signed) Validate() error {
 func (s *Signed) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		args := d.RemainingArgs()
-
 		switch len(args) {
 		case 1:
 			s.Secret = args[0]
@@ -55,54 +55,70 @@ func (s *Signed) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			return d.Err("unexpected number of arguments")
 		}
 	}
-
 	return nil
 }
 
 func (s *Signed) Match(r *http.Request) bool {
-	queryParameters := r.URL.Query()
-	if queryParameters == nil { // no query params set, deny request
+	query := r.URL.Query()
+
+	// Try both header and query param for signature
+	sigStr := strings.TrimSpace(r.Header.Get("X-Signature"))
+	if sigStr == "" {
+		sigStr = strings.TrimSpace(query.Get("signature"))
+	}
+
+	if sigStr == "" {
+		s.logger.Debug("no signature provided")
 		return false
 	}
-	token := strings.ToLower(queryParameters.Get("token"))
-	if token == "" { // token not set, deny request
+
+	sig, err := base64.RawURLEncoding.DecodeString(sigStr)
+	if err != nil {
+		s.logger.Debug("signature decode failed", zap.Error(err))
 		return false
 	}
-	expires := queryParameters.Get("expires")
-	if expires != "" { // expires param is set
+
+	expires := query.Get("expires")
+	if expires != "" {
 		expiresTime, err := strconv.ParseInt(expires, 10, 64)
-		if err == nil {
-			if time.Now().Unix() > expiresTime { // expiry time is in the past, deny access
-				return false
-			}
+		if err != nil {
+			s.logger.Debug("invalid expires value", zap.String("expires", expires))
+			return false
+		}
+
+		if time.Now().Unix() > expiresTime {
+			s.logger.Debug("signature expired", zap.String("expires", expires))
+			return false
 		}
 	}
-	modifiedURL := r.URL
-	if r.TLS == nil {
-		modifiedURL.Scheme = "http"
-	} else {
+
+	// Construct canonical URL for signing
+	modifiedURL := *r.URL
+	modifiedURL.Scheme = "http"
+	if r.TLS != nil {
 		modifiedURL.Scheme = "https"
 	}
 	modifiedURL.Host = r.Host
-	modifiedQuery := modifiedURL.Query()
-	modifiedQuery.Del("token")
-	modifiedURL.RawQuery = modifiedQuery.Encode()
-	correctToken := generateToken(strings.Join([]string{s.Secret, modifiedURL.String()}, ""))
-	if token == correctToken {
-		// Token is correct!
-		return true
+
+	q := modifiedURL.Query()
+	q.Del("signature")
+	modifiedURL.RawQuery = q.Encode() // ensures canonical order
+
+	if !s.validateURL(modifiedURL.String(), sig) {
+		s.logger.Debug("signature mismatch", zap.String("url", modifiedURL.String()))
+		return false
 	}
-	return false
+
+	return true
 }
 
-func generateToken(str string) string {
-	h := sha256.New()
-	h.Write([]byte(str))
-	sha := hex.EncodeToString(h.Sum(nil))
-	return strings.ToLower(sha)
+func (s *Signed) validateURL(targetUrl string, sig []byte) bool {
+	h := hmac.New(sha256.New, []byte(s.Secret))
+	h.Write([]byte(targetUrl))
+	expectedSig := h.Sum(nil)
+	return hmac.Equal(expectedSig, sig)
 }
 
-// Interface guards
 var (
 	_ caddy.Provisioner        = (*Signed)(nil)
 	_ caddy.Module             = (*Signed)(nil)
