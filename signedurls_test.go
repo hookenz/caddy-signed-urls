@@ -26,7 +26,7 @@ func TestSigned_MatchWithError(t *testing.T) {
 	secret := "secret"
 	logger, _ := zap.NewDevelopment()
 
-	signed := &Signed{
+	signed := &SignedUrl{
 		Secret: secret,
 		logger: logger,
 	}
@@ -66,7 +66,7 @@ func TestSigned_MatchWithError_Expired(t *testing.T) {
 	secret := "secret"
 	logger, _ := zap.NewDevelopment()
 
-	signed := &Signed{
+	signed := &SignedUrl{
 		Secret: secret,
 		logger: logger,
 	}
@@ -102,7 +102,7 @@ func TestSigned_MatchWithError_InvalidSignature(t *testing.T) {
 	secret := "secret"
 	logger, _ := zap.NewDevelopment()
 
-	signed := &Signed{
+	signed := &SignedUrl{
 		Secret: secret,
 		logger: logger,
 	}

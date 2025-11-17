@@ -18,17 +18,17 @@ import (
 )
 
 var (
-	_ caddy.Provisioner                 = (*Signed)(nil)
-	_ caddy.Module                      = (*Signed)(nil)
-	_ caddyhttp.RequestMatcherWithError = (*Signed)(nil)
-	_ caddyfile.Unmarshaler             = (*Signed)(nil)
+	_ caddy.Provisioner                 = (*SignedUrl)(nil)
+	_ caddy.Module                      = (*SignedUrl)(nil)
+	_ caddyhttp.RequestMatcherWithError = (*SignedUrl)(nil)
+	_ caddyfile.Unmarshaler             = (*SignedUrl)(nil)
 )
 
 func init() {
-	caddy.RegisterModule(Signed{})
+	caddy.RegisterModule(SignedUrl{})
 }
 
-type Signed struct {
+type SignedUrl struct {
 	Secret    string `json:"secret,omitempty"`
 	Algorithm string `json:"algorithm,omitempty"`
 
@@ -37,14 +37,14 @@ type Signed struct {
 }
 
 // CaddyModule returns the Caddy module information.
-func (Signed) CaddyModule() caddy.ModuleInfo {
+func (SignedUrl) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.matchers.signed",
-		New: func() caddy.Module { return new(Signed) },
+		New: func() caddy.Module { return new(SignedUrl) },
 	}
 }
 
-func (s *Signed) Provision(ctx caddy.Context) error {
+func (s *SignedUrl) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger()
 
 	// Set hash function
@@ -62,27 +62,58 @@ func (s *Signed) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (s *Signed) Validate() error {
+func (s *SignedUrl) Validate() error {
 	if s.Secret == "" {
 		return fmt.Errorf("secret is required")
 	}
 	return nil
 }
 
-func (s *Signed) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	for d.Next() {
-		args := d.RemainingArgs()
-		switch len(args) {
-		case 1:
-			s.Secret = args[0]
+// UnmarshalCaddyfile parses the signed_url directive.
+// It url signing and configures it with this syntax:
+//
+//	signed_url [<matcher>] [secret-key] {
+//	    secret        <secret-key>
+//	    algorithm     <alg>
+//	}
+func (s *SignedUrl) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	d.Next() // consume directive name
+
+	// --- handle single-line shorthand: signed_url "secret" ---
+	args := d.RemainingArgs()
+	if len(args) == 1 {
+		s.Secret = args[0]
+	} else if len(args) > 1 {
+		return d.ArgErr()
+	}
+
+	// --- handle block options ---
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		switch d.Val() {
+		case "secret":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			if s.Secret != "" {
+				return d.Err("secret already configured")
+			}
+			s.Secret = d.Val()
+
+		case "algorithm":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			s.Algorithm = d.Val()
+
 		default:
-			return d.Err("unexpected number of arguments")
+			return d.Errf("unknown subdirective '%s'", d.Val())
 		}
 	}
+
 	return nil
 }
 
-func (s *Signed) MatchWithError(r *http.Request) (bool, error) {
+func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 	query := r.URL.Query()
 
 	s.logger.Info("MatchWithError called",
@@ -120,8 +151,6 @@ func (s *Signed) MatchWithError(r *http.Request) (bool, error) {
 		}
 	}
 
-	// Construct canonical URL for signing
-	// Build canonical path+query string
 	q := r.URL.Query()
 	q.Del("signature")
 
@@ -132,7 +161,7 @@ func (s *Signed) MatchWithError(r *http.Request) (bool, error) {
 		canonical += "?" + encoded
 	}
 
-	if !s.validateURL(canonical, sig) {
+	if !s.verifySignature(canonical, sig) {
 		s.logger.Debug("signature mismatch", zap.String("url", canonical))
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature"))
 	}
@@ -140,9 +169,9 @@ func (s *Signed) MatchWithError(r *http.Request) (bool, error) {
 	return true, nil
 }
 
-func (s *Signed) validateURL(targetUrl string, sig []byte) bool {
+func (s *SignedUrl) verifySignature(input string, sig []byte) bool {
 	h := hmac.New(s.hashFunc, []byte(s.Secret))
-	h.Write([]byte(targetUrl))
+	h.Write([]byte(input))
 	expectedSig := h.Sum(nil)
 	return hmac.Equal(expectedSig, sig)
 }
