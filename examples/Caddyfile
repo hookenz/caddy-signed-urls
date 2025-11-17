@@ -1,0 +1,35 @@
+{
+    log {
+        level DEBUG
+    }
+}
+
+:8080 {
+
+    log {
+        level DEBUG
+        output stdout
+    }
+
+    handle /downloads/* {
+        @signed {
+            signed "secret"
+        }
+
+        # Only respond if matcher passes
+        handle @signed {
+            root ./
+            try_files {path} 404
+            file_server browse
+        }
+
+        respond "Forbidden" 403
+    }
+
+    # SPA fallback
+    handle { 
+        root ./public
+        try_files {path} /index.html
+        file_server browse
+    }
+}
