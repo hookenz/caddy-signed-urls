@@ -39,7 +39,7 @@ type SignedUrl struct {
 // CaddyModule returns the Caddy module information.
 func (SignedUrl) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.matchers.signed",
+		ID:  "http.matchers.signed_url",
 		New: func() caddy.Module { return new(SignedUrl) },
 	}
 }
