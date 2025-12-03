@@ -281,23 +281,6 @@ api.example.com {
 }
 ```
 
-### Custom Parameter Names
-
-```caddyfile
-cdn.example.com {
-    route /media/* {
-        signed_url {
-            secret "cdn-secret"
-            query_param "sig"
-        }
-
-        file_server {
-            root /var/www/media
-        }
-    }
-}
-```
-
 ### Using Header-Based Signatures
 
 For APIs where you don't want signatures in URLs:
@@ -334,22 +317,12 @@ curl -H "X-Signature: abc123..." https://api.example.com/api/internal/data
 The signature covers:
 - The full request path (e.g., `/downloads/file.pdf`)
 - All query parameters except `signature` itself
-- Query parameters are automatically sorted alphabetically
+- Query parameters must be sent in automatical order except `signature`
 
 **Example:**
 ```
-Original URL: /file?expires=123&issued=456&signature=abc
-Signed string: /file?expires=123&issued=456
-```
-
-### Query Parameter Ordering
-
-The plugin automatically handles parameter reordering. These URLs all produce the same signature:
-
-```
-/file?expires=123&issued=456&signature=abc
-/file?issued=456&expires=123&signature=abc
-/file?signature=abc&expires=123&issued=456
+Original URL: /file?foo=bar&bar=buzz&expires=123
+Signed URL: /file?foo=bar&bar=buzz&expires=123&signature=abcd...
 ```
 
 ## Security Considerations
@@ -366,9 +339,12 @@ The plugin automatically handles parameter reordering. These URLs all produce th
     # Load secret from environment
     signed_url {
         secret {$SIGNED_URL_SECRET}
+        algorithm {$SIGNED_URL_ALGORITHM}
     }
 }
 ```
+
+Suitable values for algorithm "sha256" (default if not specified), sha512"
 
 ### Expiration Times
 
@@ -382,9 +358,8 @@ Always use HTTPS in production to prevent signature interception:
 
 ```caddyfile
 example.com {
-    # Caddy automatically handles HTTPS
     route /downloads/* {
-        signed_url "secret"
+        signed_url "secretkey"
         file_server
     }
 }
@@ -476,19 +451,6 @@ go test -bench=.
 | 401 Unauthorized | Invalid signature | Signature verification failed |
 | 401 Unauthorized | URL has expired | Current time is past expiration |
 
-## Performance
-
-The plugin is designed for high performance:
-
-- **Constant-time comparison** - Prevents timing attacks
-- **Minimal allocations** - Efficient memory usage
-- **Early validation** - Checks expiration before signature calculation
-- **No external dependencies** - Uses standard library crypto
-
-Benchmark results (example):
-```
-BenchmarkSignedURL_ValidSignature-8    500000    3421 ns/op
-```
 
 ## Troubleshooting
 
@@ -500,6 +462,7 @@ BenchmarkSignedURL_ValidSignature-8    500000    3421 ns/op
 - Verify query parameters are sorted alphabetically when signing
 - Ensure the path includes query parameters in the signature
 - Check that signature is excluded from the signed string
+- Check the format for the signature is url safe base64 defined in [RFC 4648 - Base 64 Encoding with URL and Filename Safe Alphabet](https://datatracker.ietf.org/doc/html/rfc4648#section-5)
 
 **2. "URL has expired"**
 
