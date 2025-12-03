@@ -1,0 +1,32 @@
+{
+    log {
+        level DEBUG
+    }
+}
+
+:8080 {
+    log {
+        level DEBUG
+        output stdout
+    }
+
+    @downloads {
+        path /downloads/*
+        signed_url {
+            secret "secret-key"
+            algorithm "sha256"
+        }
+    }
+
+    handle @downloads {
+        file_server {
+            root ./
+        }
+    }
+
+    handle { 
+        root ./public
+        try_files {path} /index.html
+        file_server browse
+    }
+}
