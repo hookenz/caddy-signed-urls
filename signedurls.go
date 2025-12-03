@@ -3,11 +3,12 @@ package signed
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
+	"hash"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -17,111 +18,166 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(Signed{})
+	caddy.RegisterModule(SignedUrl{})
 }
 
-type Signed struct {
-	Secret string `json:"secret,omitempty"`
-	logger *zap.Logger
+type SignedUrl struct {
+	Secret    string `json:"secret,omitempty"`
+	Algorithm string `json:"algorithm,omitempty"`
+
+	hashFunc func() hash.Hash
+	logger   *zap.Logger
 }
 
 // CaddyModule returns the Caddy module information.
-func (Signed) CaddyModule() caddy.ModuleInfo {
+func (SignedUrl) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.matchers.signed",
-		New: func() caddy.Module { return new(Signed) },
+		ID:  "http.matchers.signed_url",
+		New: func() caddy.Module { return new(SignedUrl) },
 	}
 }
 
-func (s *Signed) Provision(ctx caddy.Context) error {
+func (s *SignedUrl) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger()
+
+	// Set hash function
+	switch s.Algorithm {
+	case "", "sha256":
+		s.hashFunc = sha256.New
+	case "sha384":
+		s.hashFunc = sha512.New384
+	case "sha512":
+		s.hashFunc = sha512.New
+	default:
+		return fmt.Errorf("unsupported algorithm: %s", s.Algorithm)
+	}
+
 	return nil
 }
 
-func (s *Signed) Validate() error {
+func (s *SignedUrl) Validate() error {
 	if s.Secret == "" {
 		return fmt.Errorf("secret is required")
 	}
 	return nil
 }
 
-func (s *Signed) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	for d.Next() {
-		args := d.RemainingArgs()
-		switch len(args) {
-		case 1:
-			s.Secret = args[0]
+func (s *SignedUrl) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	d.Next() // consume directive name
+
+	// --- handle single-line shorthand: signed_url "secret" ---
+	args := d.RemainingArgs()
+	if len(args) == 1 {
+		s.Secret = args[0]
+	} else if len(args) > 1 {
+		return d.ArgErr()
+	}
+
+	// --- handle block options ---
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		switch d.Val() {
+		case "secret":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			if s.Secret != "" {
+				return d.Err("secret already configured")
+			}
+			s.Secret = d.Val()
+
+		case "algorithm":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			s.Algorithm = d.Val()
+
 		default:
-			return d.Err("unexpected number of arguments")
+			return d.Errf("unknown subdirective '%s'", d.Val())
 		}
 	}
+
 	return nil
 }
 
-func (s *Signed) Match(r *http.Request) bool {
+func (s *SignedUrl) Match(r *http.Request) bool {
+	match, err := s.MatchWithError(r)
+	if err != nil {
+		s.logger.Error("failed to validate signed URL", zap.Error(err))
+	}
+
+	return match
+}
+
+func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 	query := r.URL.Query()
 
-	// Try both header and query param for signature
-	sigStr := strings.TrimSpace(r.Header.Get("X-Signature"))
+	s.logger.Info("MatchWithError called",
+		zap.String("path", r.URL.Path),
+		zap.Any("query", query),
+	)
+
+	sigStr := r.URL.Query().Get("signature")
 	if sigStr == "" {
-		sigStr = strings.TrimSpace(query.Get("signature"))
+		sigStr = r.Header.Get("X-Signature")
+	}
+	if sigStr == "" {
+		s.logger.Warn("Missing signature", zap.String("path", r.URL.Path))
+		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("missing signature"))
 	}
 
-	if sigStr == "" {
-		s.logger.Debug("no signature provided")
-		return false
-	}
+	s.logger.Debug("Signature", zap.String("sigStr", sigStr))
 
 	sig, err := base64.RawURLEncoding.DecodeString(sigStr)
 	if err != nil {
 		s.logger.Debug("signature decode failed", zap.Error(err))
-		return false
-	}
-
-	expires := query.Get("expires")
-	if expires != "" {
-		expiresTime, err := strconv.ParseInt(expires, 10, 64)
-		if err != nil {
-			s.logger.Debug("invalid expires value", zap.String("expires", expires))
-			return false
-		}
-
-		if time.Now().Unix() > expiresTime {
-			s.logger.Debug("signature expired", zap.String("expires", expires))
-			return false
-		}
+		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid signature encoding"))
 	}
 
 	// Construct canonical URL for signing
-	modifiedURL := *r.URL
-	modifiedURL.Scheme = "http"
-	if r.TLS != nil {
-		modifiedURL.Scheme = "https"
-	}
-	modifiedURL.Host = r.Host
-
-	q := modifiedURL.Query()
+	// Build canonical path+query string
+	q := r.URL.Query()
 	q.Del("signature")
-	modifiedURL.RawQuery = q.Encode() // ensures canonical order
 
-	if !s.validateURL(modifiedURL.String(), sig) {
-		s.logger.Debug("signature mismatch", zap.String("url", modifiedURL.String()))
-		return false
+	canonical := r.URL.Path
+	encoded := q.Encode()
+
+	// Check expiration
+	now := time.Now().Unix()
+	expStr := r.URL.Query().Get("expires")
+	if expStr != "" {
+		exp, err := strconv.ParseInt(expStr, 10, 64)
+		if err != nil {
+			return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid expires param"))
+		}
+		if now > exp {
+			s.logger.Warn("URL expired", zap.String("url", canonical), zap.Int64("expires", exp))
+			return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("URL expired"))
+		}
 	}
 
-	return true
+	if encoded != "" {
+		canonical += "?" + encoded
+	}
+
+	if !s.verifySignature(canonical, sig) {
+		s.logger.Debug("signature mismatch", zap.String("url", canonical))
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature"))
+	}
+
+	return true, nil
 }
 
-func (s *Signed) validateURL(targetUrl string, sig []byte) bool {
-	h := hmac.New(sha256.New, []byte(s.Secret))
-	h.Write([]byte(targetUrl))
+func (s *SignedUrl) verifySignature(input string, sig []byte) bool {
+	h := hmac.New(s.hashFunc, []byte(s.Secret))
+	h.Write([]byte(input))
 	expectedSig := h.Sum(nil)
 	return hmac.Equal(expectedSig, sig)
 }
 
 var (
-	_ caddy.Provisioner        = (*Signed)(nil)
-	_ caddy.Module             = (*Signed)(nil)
-	_ caddyhttp.RequestMatcher = (*Signed)(nil)
-	_ caddyfile.Unmarshaler    = (*Signed)(nil)
+	_ caddy.Provisioner                 = (*SignedUrl)(nil)
+	_ caddy.Module                      = (*SignedUrl)(nil)
+	_ caddyhttp.RequestMatcher          = (*SignedUrl)(nil)
+	_ caddyhttp.RequestMatcherWithError = (*SignedUrl)(nil)
+	_ caddyfile.Unmarshaler             = (*SignedUrl)(nil)
 )
