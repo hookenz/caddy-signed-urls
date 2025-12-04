@@ -59,6 +59,8 @@ func (s *SignedUrl) Validate() error {
 	if s.Secret == "" {
 		return fmt.Errorf("secret is required")
 	}
+
+	s.logger.Debug("settings", zap.String("secret", s.Secret), zap.String("alg", s.Algorithm))
 	return nil
 }
 
