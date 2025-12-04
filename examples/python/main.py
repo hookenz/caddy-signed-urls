@@ -3,48 +3,29 @@ import hmac
 import hashlib
 import base64
 import requests
-from urllib.parse import urlparse, urlunparse, urlencode
+from urllib.parse import urlparse, urlunparse, urlencode, parse_qsl
 
 def url_sign(url: str, secret: str, expires_in: int = 3600) -> str:
     parsed = urlparse(url)
+    params = dict(parse_qsl(parsed.query))
 
-    now = int(time.time())
-    expires = now + expires_in
+    params.pop("signature", None)
 
-    # EXACT Go behavior: ignore original query params entirely.
-    params = {
-        "expires": str(expires),
-    }
+    # add or replace expires
+    params["expires"] = str(int(time.time()) + expires_in)
 
-    # Sorted:
-    sorted_query = urlencode(sorted(params.items()))
+    # sort query params by key
+    sorted_params = sorted(params.items(), key=lambda x: x[0])
+    sorted_query = urlencode(sorted_params)
+    new_url = urlunparse(parsed._replace(query=sorted_query))
 
-    # Sign EXACTLY: path + "?" + sorted_query
-    to_sign = f"{parsed.path}?{sorted_query}"
+    print(new_url)
 
-    raw_sig = hmac.new(
-        secret.encode(),
-        to_sign.encode(),
-        hashlib.sha256
-    ).digest()
-
-    # Go uses RawURLEncoding (no padding)
-    signature = base64.urlsafe_b64encode(raw_sig).rstrip(b"=").decode()
-
-    # Add signature
-    params["signature"] = signature
-
-    # Final URL must also have sorted params
-    final_query = urlencode(sorted(params.items()))
-
-    return urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        final_query,
-        parsed.fragment,
-    ))
+    # sign and return
+    raw_sig = hmac.new(secret.encode(), new_url.encode(), hashlib.sha256).digest()
+    sig = base64.urlsafe_b64encode(raw_sig).rstrip(b"=").decode()
+        
+    return f"{new_url}&signature={sig}"
 
 
 def main():
