@@ -173,7 +173,13 @@ func (s *SignedUrl) verifySignature(input string, sig []byte) bool {
 	h := hmac.New(s.hashFunc, []byte(s.Secret))
 	h.Write([]byte(input))
 	expectedSig := h.Sum(nil)
-	return hmac.Equal(expectedSig, sig)
+
+	s.logger.Debug("verifying sig on input expected signature",
+		zap.String("input", input),
+		zap.String("signature", base64.RawURLEncoding.EncodeToString(expectedSig)),
+	)
+
+	return hmac.Equal(sig, expectedSig)
 }
 
 var (
