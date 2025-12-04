@@ -86,6 +86,7 @@ signed_url {
 import hmac
 import hashlib
 import time
+import base64
 from urllib.parse import urlencode
 
 secret = "your-secret-key"
@@ -100,15 +101,19 @@ params = {
 }
 query_string = urlencode(sorted(params.items()))
 
-# Sign the path with sorted query parameters
+# Build string to sign
 to_sign = f"{path}?{query_string}"
-signature = hmac.new(
+
+# Generate raw HMAC digest
+raw_sig = hmac.new(
     secret.encode(),
     to_sign.encode(),
     hashlib.sha256
-).hexdigest()
+).digest()
 
-# Final URL
+# Base64 URL-encode (no padding)
+signature = base64.urlsafe_b64encode(raw_sig).rstrip(b'=').decode()
+
 url = f"{path}?{query_string}&signature={signature}"
 print(url)
 # /downloads/document.pdf?expires=1731632400&issued=1731628800&signature=abc123...
@@ -253,8 +258,6 @@ files.example.com {
         file_server {
             root /var/www/downloads
         }
-
-        respond "Forbidden" 403
     }
     
     # Public files don't need signing
