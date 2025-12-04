@@ -2,6 +2,7 @@ import time
 import hmac
 import hashlib
 import base64
+import requests
 from urllib.parse import urlparse, urlunparse, urlencode
 
 def url_sign(url: str, secret: str, expires_in: int = 3600) -> str:
@@ -44,6 +45,7 @@ def url_sign(url: str, secret: str, expires_in: int = 3600) -> str:
         final_query,
         parsed.fragment,
     ))
+
 
 def main():
     secret = "secret-key"

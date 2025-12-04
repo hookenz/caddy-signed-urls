@@ -94,28 +94,29 @@ path = "/downloads/document.pdf"
 issued = int(time.time())
 expires = issued + 3600  # Valid for 1 hour
 
-# Build query parameters (automatically sorted)
+# Build query parameters (sorted)
 params = {
-    'issued': issued,
-    'expires': expires
+    "issued": issued,
+    "expires": expires,
 }
 query_string = urlencode(sorted(params.items()))
 
-# Build string to sign
+# String to sign
 to_sign = f"{path}?{query_string}"
 
-# Generate raw HMAC digest
+# Raw HMAC-SHA256
 raw_sig = hmac.new(
     secret.encode(),
     to_sign.encode(),
     hashlib.sha256
 ).digest()
 
-# Base64 URL-encode (no padding)
-signature = base64.urlsafe_b64encode(raw_sig).rstrip(b'=').decode()
+# Base64 URL-safe signature without padding
+signature = base64.urlsafe_b64encode(raw_sig).rstrip(b"=").decode()
 
-url = f"{path}?{query_string}&signature={signature}"
-print(url)
+# Final signed URL
+signed_url = f"{path}?{query_string}&signature={signature}"
+print(signed_url)
 # /downloads/document.pdf?expires=1731632400&issued=1731628800&signature=abc123...
 ```
 
