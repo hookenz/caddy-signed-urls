@@ -21,8 +21,12 @@ func init() {
 	caddy.RegisterModule(SignedUrl{})
 }
 
+// SignedURL is a Caddy request matcher that validates signed URLs using HMAC signatures.
 type SignedUrl struct {
-	Secret    string `json:"secret,omitempty"`
+	// The secret key used to sign URLs. This should be a strong, random string.
+	Secret string `json:"secret,omitempty"`
+
+	// The hash algorithm to use for signing. Supported values: "sha256" (default), "sha384", "sha512".
 	Algorithm string `json:"algorithm,omitempty"`
 
 	hashFunc func() hash.Hash
