@@ -21,8 +21,42 @@ func init() {
 	caddy.RegisterModule(SignedUrl{})
 }
 
+// SignedUrl is a Caddy request matcher that validates signed URLs using HMAC signatures.
+//
+// The signature is expected to be provided as a query parameter named "signature"
+// or as an "X-Signature" header. The URL is considered valid if the signature
+// matches the expected value computed using the secret key and the canonical
+// URL (path + query string without the signature).
+//
+// Optionally, an "expires" query parameter can be included to specify a Unix
+// timestamp after which the URL is no longer valid.
+//
+// The signature should be encoded using base64 URL encoding without padding.
+//
+// Example Caddyfile usage:
+// ```
+// 	    handle /static/thumbnails/* {
+// 		@signed {
+// 			signed_url {$SIGNED_URL_SECRET}
+// 		}
+
+//	 		handle @signed {
+// 			root /data/files/thumbnails
+// 			uri strip_prefix /static/thumbnails
+// 			file_server
+// 		}
+
+//	 	handle {
+//			respond "Unauthorized" 401
+//		}
+//	}
+//
+// ```
 type SignedUrl struct {
-	Secret    string `json:"secret,omitempty"`
+	// The secret key used to sign URLs. This should be a strong, random string.
+	Secret string `json:"secret,omitempty"`
+
+	// The hash algorithm to use for signing. Supported values: "sha256" (default), "sha384", "sha512".
 	Algorithm string `json:"algorithm,omitempty"`
 
 	hashFunc func() hash.Hash
