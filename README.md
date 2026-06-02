@@ -26,7 +26,7 @@ go get github.com/hookenz/caddy-signed-urls
 
 ### Basic Usage
 
-Protect file server routes with signed URLs:
+Protect file server routes with a signed URL module in your Caddyfile:
 
 ```caddyfile
 example.com {
@@ -34,21 +34,6 @@ example.com {
         signed_url "your-secret-key"
         file_server {
             root /var/www/downloads
-        }
-    }
-}
-```
-
-### With Expiration
-
-Create URLs that expire after 1 hour:
-
-```caddyfile
-example.com {
-    route /shared/* {
-        signed_url "your-secret-key"
-        file_server {
-            root /var/www/shared
         }
     }
 }
@@ -79,6 +64,38 @@ signed_url {
 | `algorithm` | string | `sha256` | The signature algorithm used by the signer |
 
 ## Generating Signed URLs
+
+### Node.js
+
+```javascript
+const crypto = require('crypto');
+
+function generateSignedURL(secret, path, ttlSeconds) {
+    const issued = Math.floor(Date.now() / 1000);
+    const expires = issued + ttlSeconds;
+    
+    // Build query params (URLSearchParams sorts automatically)
+    const params = new URLSearchParams();
+    params.set('issued', issued);
+    params.set('expires', expires);
+    params.sort();
+    
+    // Sign the path with query params
+    const toSign = `${path}?${params.toString()}`;
+    const signature = crypto
+        .createHmac('sha256', secret)
+        .update(toSign)
+        .digest('hex');
+    
+    // Add signature to query
+    params.set('signature', signature);
+    
+    return `${path}?${params.toString()}`;
+}
+
+const url = generateSignedURL('your-secret-key', '/downloads/document.pdf', 3600);
+console.log(url);
+```
 
 ### Python
 
@@ -163,38 +180,6 @@ func main() {
 }
 ```
 
-### Node.js
-
-```javascript
-const crypto = require('crypto');
-
-function generateSignedURL(secret, path, ttlSeconds) {
-    const issued = Math.floor(Date.now() / 1000);
-    const expires = issued + ttlSeconds;
-    
-    // Build query params (URLSearchParams sorts automatically)
-    const params = new URLSearchParams();
-    params.set('issued', issued);
-    params.set('expires', expires);
-    params.sort();
-    
-    // Sign the path with query params
-    const toSign = `${path}?${params.toString()}`;
-    const signature = crypto
-        .createHmac('sha256', secret)
-        .update(toSign)
-        .digest('hex');
-    
-    // Add signature to query
-    params.set('signature', signature);
-    
-    return `${path}?${params.toString()}`;
-}
-
-const url = generateSignedURL('your-secret-key', '/downloads/document.pdf', 3600);
-console.log(url);
-```
-
 ### PHP
 
 ```php
@@ -241,7 +226,7 @@ $url generateSignedURL('secret', '/downloads/filename.jpg', 120);
 echo $url
 ```
 
-## Usage Examples
+## Examples
 
 ### Protecting File Downloads
 
