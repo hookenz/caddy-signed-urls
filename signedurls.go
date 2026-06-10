@@ -90,11 +90,10 @@ func (s *SignedUrl) Provision(ctx caddy.Context) error {
 }
 
 func (s *SignedUrl) Validate() error {
-	if s.Secret == "" {
-		return fmt.Errorf("secret is required")
-	}
-
-	s.logger.Debug("settings", zap.String("secret", s.Secret), zap.String("alg", s.Algorithm))
+	s.logger.Debug(
+		"settings", zap.String("secret", s.Secret),
+		zap.String("alg", s.Algorithm),
+	)
 	return nil
 }
 
@@ -195,7 +194,15 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		canonical += "?" + encoded
 	}
 
-	if !s.verifySignature(canonical, sig) {
+	secret := replacePlaceholders(r, s.Secret)
+	if secret == "" {
+		return false, caddyhttp.Error(
+			http.StatusInternalServerError,
+			fmt.Errorf("resolved secret is empty"),
+		)
+	}
+
+	if !s.verifySignature(secret, canonical, sig) {
 		s.logger.Debug("signature mismatch", zap.String("url", canonical))
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature"))
 	}
@@ -203,8 +210,8 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 	return true, nil
 }
 
-func (s *SignedUrl) verifySignature(input string, sig []byte) bool {
-	h := hmac.New(s.hashFunc, []byte(s.Secret))
+func (s *SignedUrl) verifySignature(secret, input string, sig []byte) bool {
+	h := hmac.New(s.hashFunc, []byte(secret))
 	h.Write([]byte(input))
 	expectedSig := h.Sum(nil)
 
@@ -214,6 +221,20 @@ func (s *SignedUrl) verifySignature(input string, sig []byte) bool {
 	)
 
 	return hmac.Equal(sig, expectedSig)
+}
+
+func replacePlaceholders(r *http.Request, value string) string {
+	repl := r.Context().Value(caddy.ReplacerCtxKey)
+	if repl == nil {
+		return value
+	}
+
+	replacer, ok := repl.(*caddy.Replacer)
+	if !ok {
+		return value
+	}
+
+	return replacer.ReplaceAll(value, "")
 }
 
 var (
