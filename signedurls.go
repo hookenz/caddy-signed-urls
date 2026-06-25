@@ -1,6 +1,8 @@
 package signed
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -39,6 +41,12 @@ type SignedUrl struct {
 	// The hash algorithm to use for signing. Supported values: "sha256" (default), "sha384", "sha512".
 	Algorithm string `json:"algorithm,omitempty"`
 
+	// CookieName enables cookie-bound token verification when set.
+	// The URL must carry an "token" query param containing an AES-GCM
+	// encrypted value that, once decrypted, must match this cookie's value.
+	CookieName string `json:"cookie_name,omitempty"`
+
+	aesKey   []byte // 32-byte AES-256 key derived from Secret
 	logger   *zap.Logger
 }
 
@@ -59,13 +67,21 @@ func (s *SignedUrl) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("unsupported hash algorithm: %s", s.Algorithm)
 	}
 
+	// Derive a 32-byte AES key from the secret using SHA-256.
+	// This is done at provision time so it's not repeated per-request.
+	if s.CookieName != "" {
+		h := sha256.Sum256([]byte(s.Secret))
+		s.aesKey = h[:]
+	}
+
 	return nil
 }
 
 func (s *SignedUrl) Validate() error {
-	s.logger.Debug(
-		"settings", zap.String("secret", s.Secret),
+	s.logger.Debug("settings",
+		zap.String("secret", s.Secret),
 		zap.String("alg", s.Algorithm),
+		zap.String("cookie_name", s.CookieName),
 	)
 	return nil
 }
@@ -92,18 +108,20 @@ func (s *SignedUrl) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Err("secret already configured")
 			}
 			s.Secret = d.Val()
-
 		case "algorithm":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
 			s.Algorithm = d.Val()
-
+		case "cookie_name":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			s.CookieName = d.Val()
 		default:
 			return d.Errf("unknown subdirective '%s'", d.Val())
 		}
 	}
-
 	return nil
 }
 
@@ -124,7 +142,7 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		zap.Any("query", query),
 	)
 
-	sigStr := r.URL.Query().Get("signature")
+	sigStr := query.Get("signature")
 	if sigStr == "" {
 		sigStr = r.Header.Get("X-Signature")
 	}
@@ -146,41 +164,102 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 	q := r.URL.Query()
 	q.Del("signature")
 
-	canonical := r.URL.Path
-	encoded := q.Encode()
-
-	// Check expiration
-	now := time.Now().Unix()
-	expStr := r.URL.Query().Get("expires")
+	// Check expiration before anything else
+	expStr := query.Get("expires")
 	if expStr != "" {
 		exp, err := strconv.ParseInt(expStr, 10, 64)
 		if err != nil {
 			return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid expires param"))
 		}
-		if now > exp {
-			s.logger.Warn("URL expired", zap.String("url", canonical), zap.Int64("expires", exp))
-			return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("URL expired"))
+		if time.Now().Unix() > exp {
+			s.logger.Warn("URL expired", zap.String("path", r.URL.Path))
+			return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("URL expired"))
 		}
 	}
 
-	if encoded != "" {
+	// Build canonical URL for HMAC verification (excludes signature param)
+	canonical := r.URL.Path
+	if encoded := q.Encode(); encoded != "" {
 		canonical += "?" + encoded
 	}
 
 	secret := replacePlaceholders(r, s.Secret)
 	if secret == "" {
-		return false, caddyhttp.Error(
-			http.StatusInternalServerError,
-			fmt.Errorf("resolved secret is empty"),
-		)
+		return false, caddyhttp.Error(http.StatusInternalServerError, fmt.Errorf("resolved secret is empty"))
 	}
 
 	if !s.verifySignature(secret, canonical, sig) {
 		s.logger.Debug("signature mismatch", zap.String("url", canonical))
-		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature"))
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature mismatch"))
+	}
+
+	// Cookie-bound token verification (opt-in)
+	if s.CookieName != "" {
+		if ok, err := s.verifyCookieToken(r, query); !ok {
+			s.logger.Debug("cookie mismatch", zap.String("url", canonical))
+			return false, err
+		}
 	}
 
 	return true, nil
+}
+
+// verifyCookieToken decrypts the "token" query param and compares it to the
+// named cookie value. Both must be present and match.
+func (s *SignedUrl) verifyCookieToken(r *http.Request, query map[string][]string) (bool, error) {
+	tokenParam := ""
+	if vals, ok := query["token"]; ok && len(vals) > 0 {
+		tokenParam = vals[0]
+	}
+
+	if tokenParam == "" {
+		s.logger.Warn("cookie-bound check: missing token param")
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing token param"))
+	}
+
+	cookie, err := r.Cookie(s.CookieName)
+	if err != nil {
+		s.logger.Warn("cookie-bound check: missing cookie", zap.String("cookie", s.CookieName))
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing cookie"))
+	}
+
+	// Decrypt the token param
+	ciphertext, err := base64.RawURLEncoding.DecodeString(tokenParam)
+	if err != nil {
+		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid token encoding"))
+	}
+
+	plaintext, err := aesGCMDecrypt(s.aesKey, ciphertext)
+	if err != nil {
+		s.logger.Warn("cookie-bound check: token decryption failed", zap.Error(err))
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("invalid token"))
+	}
+
+	if !hmac.Equal(plaintext, []byte(cookie.Value)) {
+		s.logger.Warn("cookie-bound check: token/cookie mismatch")
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("token/cookie mismatch"))
+	}
+
+	return true, nil
+}
+
+// aesGCMDecrypt decrypts data encrypted with AES-256-GCM.
+// Ciphertext format: [12-byte nonce][ciphertext+tag]
+func aesGCMDecrypt(key, data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonceSize := gcm.NonceSize() // 12
+	if len(data) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 func (s *SignedUrl) verifySignature(secret, input string, sig []byte) bool {
@@ -197,14 +276,12 @@ func (s *SignedUrl) verifySignature(secret, input string, sig []byte) bool {
 
 	h := hmac.New(hashFunc, []byte(secret))
 	h.Write([]byte(input))
-	expectedSig := h.Sum(nil)
-
-	s.logger.Debug("verifying sig on input expected signature",
+	expected := h.Sum(nil)
+	s.logger.Debug("verifying signature",
 		zap.String("input", input),
-		zap.String("signature", base64.RawURLEncoding.EncodeToString(expectedSig)),
+		zap.String("expected", base64.RawURLEncoding.EncodeToString(expected)),
 	)
-
-	return hmac.Equal(sig, expectedSig)
+	return hmac.Equal(sig, expected)
 }
 
 func replacePlaceholders(r *http.Request, value string) string {
@@ -212,12 +289,10 @@ func replacePlaceholders(r *http.Request, value string) string {
 	if repl == nil {
 		return value
 	}
-
 	replacer, ok := repl.(*caddy.Replacer)
 	if !ok {
 		return value
 	}
-
 	return replacer.ReplaceAll(value, "")
 }
 
