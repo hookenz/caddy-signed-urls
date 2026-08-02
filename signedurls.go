@@ -6,7 +6,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
-	"hash"
+	"slices"
 	"net/http"
 	"strconv"
 	"time"
@@ -59,9 +59,10 @@ type SignedUrl struct {
 	// The hash algorithm to use for signing. Supported values: "sha256" (default), "sha384", "sha512".
 	Algorithm string `json:"algorithm,omitempty"`
 
-	hashFunc func() hash.Hash
 	logger   *zap.Logger
 }
+
+var validHashAlg = []string{"", "sha256", "sha384", "sha512"}
 
 // CaddyModule returns the Caddy module information.
 func (SignedUrl) CaddyModule() caddy.ModuleInfo {
@@ -74,16 +75,8 @@ func (SignedUrl) CaddyModule() caddy.ModuleInfo {
 func (s *SignedUrl) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger()
 
-	// Set hash function
-	switch s.Algorithm {
-	case "", "sha256":
-		s.hashFunc = sha256.New
-	case "sha384":
-		s.hashFunc = sha512.New384
-	case "sha512":
-		s.hashFunc = sha512.New
-	default:
-		return fmt.Errorf("unsupported algorithm: %s", s.Algorithm)
+	if slices.Contains(validHashAlg, s.Algorithm) {
+		return fmt.Errorf("unsupported hash algorithm: %s", s.Algorithm)
 	}
 
 	return nil
@@ -211,7 +204,18 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 }
 
 func (s *SignedUrl) verifySignature(secret, input string, sig []byte) bool {
-	h := hmac.New(s.hashFunc, []byte(secret))
+
+	hashFunc := sha256.New
+	switch s.Algorithm {
+	case "sha256":
+		hashFunc = sha256.New
+	case "sha384":
+		hashFunc = sha512.New384
+	case "sha512":
+		hashFunc = sha512.New
+	}
+
+	h := hmac.New(hashFunc, []byte(secret))
 	h.Write([]byte(input))
 	expectedSig := h.Sum(nil)
 

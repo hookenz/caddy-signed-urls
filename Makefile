@@ -3,3 +3,6 @@ build:
 
 run:
 	cd examples/caddy && ../../caddy run
+
+test:
+	go test ./...
