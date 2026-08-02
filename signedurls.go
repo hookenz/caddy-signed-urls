@@ -34,7 +34,7 @@ func init() {
 // The signature should be encoded using base64 URL encoding without padding.
 //
 // Example Caddyfile usage:
-// ```
+// 
 // 	    handle /static/thumbnails/* {
 // 		@signed {
 // 			signed_url {$SIGNED_URL_SECRET}
@@ -50,8 +50,6 @@ func init() {
 //			respond "Unauthorized" 401
 //		}
 //	}
-//
-// ```
 type SignedUrl struct {
 	// The secret key used to sign URLs. This should be a strong, random string.
 	Secret string `json:"secret,omitempty"`
