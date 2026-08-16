@@ -15,7 +15,7 @@
         signed_url {
             secret "secret-key"
             algorithm "sha256"
-            cookie_name "_check"
+            bind_cookie "_check"
         }
     }
 

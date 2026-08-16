@@ -153,32 +153,59 @@ func (s *SignedUrl) Match(r *http.Request) bool {
 }
 
 func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
-	q := r.URL.Query()
+	query := r.URL.Query()
 
-	s.logger.Info("MatchWithError called",
-		zap.String("path", r.URL.Path),
-		zap.Any("query", q),
-	)
-
-	sigStr := q.Get("signature")
-	if sigStr == "" {
-		sigStr = r.Header.Get("X-Signature")
+	signature := query.Get("signature")
+	if signature != "" {
+		query.Del("signature") // remove signature from query for canonical string
+	} else {
+		signature = r.Header.Get("X-Signature")
 	}
-	if sigStr == "" {
+
+	if signature == "" {
 		s.logger.Warn("Missing signature", zap.String("path", r.URL.Path))
 		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("missing signature"))
 	}
 
-	s.logger.Debug("Signature", zap.String("sigStr", sigStr))
+	s.logger.Info("MatchWithError called",
+		zap.String("path", r.URL.Path),
+		zap.Any("query", query),
+	)
 
-	sig, err := base64.RawURLEncoding.DecodeString(sigStr)
+	sig, err := base64.RawURLEncoding.DecodeString(signature)
 	if err != nil {
 		s.logger.Debug("signature decode failed", zap.Error(err))
 		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid signature encoding"))
 	}
 
-	// Check expiration before signature verification
-	expStr := q.Get("expires")
+	canonical := r.URL.Path
+	if encoded := query.Encode(); encoded != "" {
+		canonical += "?" + encoded
+	}
+
+	secret := replacePlaceholders(r, s.Secret)
+	if secret == "" {
+		return false, caddyhttp.Error(http.StatusInternalServerError, fmt.Errorf("resolved secret is empty"))
+	}
+
+	// Verify HMAC signature OVER canonical string
+	if !s.verifySignature(secret, canonical, sig) {
+		s.logger.Debug("signature mismatch", zap.String("url", canonical))
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature mismatch"))
+	}
+
+	s.logger.Info("so far so good, signature verified", zap.String("url", canonical))
+
+	// Cookie-bound token verification (opt-in)
+	if s.BindCookie != "" {
+		if ok, err := s.verifyCookieToken(r, query); !ok {
+			s.logger.Debug("cookie mismatch", zap.String("url", canonical))
+			return false, err
+		}
+	}
+
+	// Check expiration if present
+	expStr := query.Get("expires")
 	if expStr != "" {
 		exp, err := strconv.ParseInt(expStr, 10, 64)
 		if err != nil {
@@ -190,65 +217,34 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		}
 	}
 
-	// Construct canonical URL for HMAC verification (excluding signature param)
-	q.Del("signature")
-
-	canonical := r.URL.Path
-	if encoded := q.Encode(); encoded != "" {
-		canonical += "?" + encoded
-	}
-
-	secret := replacePlaceholders(r, s.Secret)
-	if secret == "" {
-		return false, caddyhttp.Error(http.StatusInternalServerError, fmt.Errorf("resolved secret is empty"))
-	}
-
-	if !s.verifySignature(secret, canonical, sig) {
-		s.logger.Debug("signature mismatch", zap.String("url", canonical))
-		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature mismatch"))
-	}
-
-	// Cookie-bound token verification (opt-in)
-	if s.BindCookie != "" {
-		if ok, err := s.verifyCookieToken(r, q); !ok {
-			s.logger.Debug("cookie mismatch", zap.String("url", canonical))
-			return false, err
-		}
-	}
-
 	return true, nil
 }
 
-// verifyCookieToken decrypts the "token" query param and compares it to the
-// named cookie value. Both must be present and match.
+// verifyCookieToken verifies that the bind query parameter hashes to the
+// value stored in the named cookie.
 func (s *SignedUrl) verifyCookieToken(r *http.Request, query url.Values) (bool, error) {
-	tokenParam := query.Get("token")
-	if tokenParam == "" {
-		s.logger.Warn("cookie-bound check: missing token param")
-		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing token param"))
+	bindParam := query.Get("bind")
+	if bindParam == "" {
+		s.logger.Warn("cookie-bound check: missing bind param")
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing bind param"))
 	}
 
 	cookie, err := r.Cookie(s.BindCookie)
 	if err != nil || cookie.Value == "" {
-		s.logger.Warn("cookie-bound check: missing or empty cookie", zap.String("cookie", s.BindCookie))
+		s.logger.Warn("cookie-bound check: missing or empty cookie",
+			zap.String("cookie", s.BindCookie),
+		)
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing cookie"))
 	}
 
-	// Decrypt the token param
-	ciphertext, err := base64.RawURLEncoding.DecodeString(tokenParam)
-	if err != nil {
-		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid token encoding"))
-	}
+	// Hash the exact bind value from the URL.
+	hash := sha256.Sum256([]byte(bindParam))
+	expectedCookie := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	plaintext, err := aesGCMDecrypt(s.aesKey, ciphertext)
-	if err != nil {
-		s.logger.Warn("cookie-bound check: token decryption failed", zap.Error(err))
-		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("invalid token"))
-	}
-
-	if !hmac.Equal(plaintext, []byte(cookie.Value)) {
-		s.logger.Warn("cookie-bound check: token/cookie mismatch")
-		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("token/cookie mismatch"))
+	// Compare the hash with the cookie value.
+	if expectedCookie != cookie.Value {
+		s.logger.Warn("cookie-bound check: cookie mismatch")
+		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("cookie token mismatch"))
 	}
 
 	return true, nil
