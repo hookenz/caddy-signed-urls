@@ -1,8 +1,6 @@
 package signed
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -167,10 +165,7 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("missing signature"))
 	}
 
-	s.logger.Info("MatchWithError called",
-		zap.String("path", r.URL.Path),
-		zap.Any("query", query),
-	)
+	s.logger.Debug("MatchWithError called", zap.String("path", r.URL.Path), zap.Any("query", query))
 
 	sig, err := base64.RawURLEncoding.DecodeString(signature)
 	if err != nil {
@@ -194,16 +189,6 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("signature mismatch"))
 	}
 
-	s.logger.Info("so far so good, signature verified", zap.String("url", canonical))
-
-	// Cookie-bound token verification (opt-in)
-	if s.BindCookie != "" {
-		if ok, err := s.verifyCookieToken(r, query); !ok {
-			s.logger.Debug("cookie mismatch", zap.String("url", canonical))
-			return false, err
-		}
-	}
-
 	// Check expiration if present
 	expStr := query.Get("expires")
 	if expStr != "" {
@@ -211,9 +196,18 @@ func (s *SignedUrl) MatchWithError(r *http.Request) (bool, error) {
 		if err != nil {
 			return false, caddyhttp.Error(http.StatusBadRequest, fmt.Errorf("invalid expires param"))
 		}
+
 		if time.Now().Unix() > exp {
 			s.logger.Warn("URL expired", zap.String("path", r.URL.Path))
 			return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("URL expired"))
+		}
+	}
+
+	// Cookie-bound token verification
+	if s.BindCookie != "" {
+		if ok, err := s.verifyCookieToken(r, query); !ok {
+			s.logger.Debug("cookie mismatch", zap.String("url", canonical))
+			return false, err
 		}
 	}
 
@@ -230,17 +224,6 @@ func (s *SignedUrl) verifyCookieToken(r *http.Request, query url.Values) (bool, 
 	}
 
 	cookie, err := r.Cookie(s.BindCookie)
-
-	s.logger.Debug("cookie-bound check",
-		zap.String("bind_param", bindParam),
-		zap.String("cookie_name", s.BindCookie),
-		zap.String("cookie_value", func() string {
-			if cookie != nil {
-				return cookie.Value
-			}
-			return "<nil>"
-		}()),
-	)
 
 	if err != nil || cookie.Value == "" {
 		s.logger.Warn("cookie-bound check: missing or empty cookie",
@@ -260,25 +243,6 @@ func (s *SignedUrl) verifyCookieToken(r *http.Request, query url.Values) (bool, 
 	}
 
 	return true, nil
-}
-
-// aesGCMDecrypt decrypts data encrypted with AES-256-GCM.
-// Ciphertext format: [12-byte nonce][ciphertext+tag]
-func aesGCMDecrypt(key, data []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonceSize := gcm.NonceSize() // 12
-	if len(data) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 func (s *SignedUrl) verifySignature(secret, input string, sig []byte) bool {

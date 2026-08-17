@@ -17,7 +17,9 @@
         signed_url {
             secret "secret-key"
             algorithm "sha256"
-            bind_cookie "download_token"
+
+            # To bind a cookie to the signed URL, uncomment the following line and specify the cookie name.
+            # bind_cookie "download_token"
         }
     }
 
