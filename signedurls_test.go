@@ -154,31 +154,29 @@ func encryptToken(t *testing.T, secret, plaintext string) string {
 	return base64.RawURLEncoding.EncodeToString(ciphertext)
 }
 
-func generateCookieHash() (string, string, error) {
-	// Generate a random binding value.
+func generateCookieAndHash() (string, string, error) {
+	// Generate the random value that will be stored in the cookie.
 	bind := make([]byte, 10)
 	if _, err := rand.Read(bind); err != nil {
 		return "", "", err
 	}
 
-	// Encode the binding value for use in the URL.
-	bindValue := base64.RawURLEncoding.EncodeToString(bind)
+	// The raw random value is the cookie value.
+	cookieValue := base64.RawURLEncoding.EncodeToString(bind)
 
-	// Hash the exact value that will appear in the URL.
-	hash := sha256.Sum256([]byte(bindValue))
+	// Hash the exact cookie value for use in the URL.
+	hash := sha256.Sum256([]byte(cookieValue))
+	bindValue := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	// The URL gets the random value; the cookie gets its hash.
-	return bindValue,
-		base64.RawURLEncoding.EncodeToString(hash[:]),
-		nil
+	return cookieValue, bindValue, nil
 }
 
 // buildBoundSignedURL constructs a signed URL bound to a cookie value.
-// It returns the URL and the cookie value that must accompany it.
+// It returns the URL and the raw cookie value that must accompany it.
 func buildBoundSignedURL(t *testing.T, secret, baseURL string) (string, string) {
 	t.Helper()
 
-	bindValue, cookieValue, err := generateCookieHash()
+	cookieValue, bindValue, err := generateCookieAndHash()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +201,7 @@ func buildBoundSignedURL(t *testing.T, secret, baseURL string) (string, string) 
 }
 
 // TestSigned_MatchWithError_CookieToken_Valid tests that a request with a
-// correctly encrypted token param and matching cookie passes.
+// correctly hashed bind parameter and matching raw cookie value passes.
 func TestSigned_MatchWithError_CookieToken_Valid(t *testing.T) {
 	secret := "secret"
 	bindCookie := "su_secret"
@@ -216,23 +214,38 @@ func TestSigned_MatchWithError_CookieToken_Valid(t *testing.T) {
 	}
 	_ = signed.Provision(caddy.Context{})
 
-	rawURL, cookieValue := buildBoundSignedURL(t, secret, "https://example.com/private/file.txt")
+	rawURL, cookieValue := buildBoundSignedURL(
+		t,
+		secret,
+		"https://example.com/private/file.txt",
+	)
 
-	logger.Info("Testing valid cookie-bound signed URL", zap.String("url", rawURL), zap.String("cookie", cookieValue))
+	logger.Info(
+		"Testing valid cookie-bound signed URL",
+		zap.String("url", rawURL),
+		zap.String("cookie", cookieValue),
+	)
 
 	req, _ := http.NewRequest("GET", rawURL, nil)
 	req.Host = "example.com"
 	req.TLS = &tls.ConnectionState{}
-	req.AddCookie(&http.Cookie{Name: bindCookie, Value: cookieValue})
+	req.AddCookie(&http.Cookie{
+		Name:  bindCookie,
+		Value: cookieValue,
+	})
 
 	ok, err := signed.MatchWithError(req)
 	if err != nil || !ok {
-		t.Fatalf("expected cookie-bound signed URL to pass, got ok=%v err=%v", ok, err)
+		t.Fatalf(
+			"expected cookie-bound signed URL to pass, got ok=%v err=%v",
+			ok,
+			err,
+		)
 	}
 }
 
 // TestSigned_MatchWithError_CookieToken_MissingCookie tests that the request
-// is rejected when the cookie is absent even though the token param is valid.
+// is rejected when the cookie is absent even though the bind parameter is valid.
 func TestSigned_MatchWithError_CookieToken_MissingCookie(t *testing.T) {
 	secret := "secret"
 	bindCookie := "su_secret"
@@ -245,21 +258,29 @@ func TestSigned_MatchWithError_CookieToken_MissingCookie(t *testing.T) {
 	}
 	_ = signed.Provision(caddy.Context{})
 
-	rawURL, _ := buildBoundSignedURL(t, secret, "https://example.com/private/file.txt")
+	rawURL, _ := buildBoundSignedURL(
+		t,
+		secret,
+		"https://example.com/private/file.txt",
+	)
 
 	req, _ := http.NewRequest("GET", rawURL, nil)
 	req.Host = "example.com"
 	req.TLS = &tls.ConnectionState{}
-	// deliberately no cookie added
 
+	// Deliberately no cookie added.
 	ok, err := signed.MatchWithError(req)
 	if err == nil || ok {
-		t.Fatalf("expected missing cookie to fail, got ok=%v err=%v", ok, err)
+		t.Fatalf(
+			"expected missing cookie to fail, got ok=%v err=%v",
+			ok,
+			err,
+		)
 	}
 }
 
 // TestSigned_MatchWithError_CookieToken_WrongCookieValue tests that a request
-// is rejected when the cookie value doesn't match the decrypted token.
+// is rejected when the cookie value does not match the bind parameter.
 func TestSigned_MatchWithError_CookieToken_WrongCookieValue(t *testing.T) {
 	secret := "secret"
 	bindCookie := "su_secret"
@@ -272,24 +293,34 @@ func TestSigned_MatchWithError_CookieToken_WrongCookieValue(t *testing.T) {
 	}
 	_ = signed.Provision(caddy.Context{})
 
-	rawURL, _ := buildBoundSignedURL(t, secret, "https://example.com/private/file.txt")
+	rawURL, _ := buildBoundSignedURL(
+		t,
+		secret,
+		"https://example.com/private/file.txt",
+	)
 
 	req, _ := http.NewRequest("GET", rawURL, nil)
 	req.Host = "example.com"
 	req.TLS = &tls.ConnectionState{}
-	req.AddCookie(&http.Cookie{Name: bindCookie, Value: "wrong-value"})
+	req.AddCookie(&http.Cookie{
+		Name:  bindCookie,
+		Value: "wrong-value",
+	})
 
 	ok, err := signed.MatchWithError(req)
 	if err == nil || ok {
-		t.Fatalf("expected wrong cookie value to fail, got ok=%v err=%v", ok, err)
+		t.Fatalf(
+			"expected wrong cookie value to fail, got ok=%v err=%v",
+			ok,
+			err,
+		)
 	}
 }
 
-// TestSigned_MatchWithError_CookieToken_TamperedToken tests that a request is
-// rejected when the token param is replaced with a different valid ciphertext
-// (i.e. someone re-encrypts a different value). The HMAC covers the token
-// param, so swapping it invalidates the signature.
-func TestSigned_MatchWithError_CookieToken_TamperedToken(t *testing.T) {
+// TestSigned_MatchWithError_CookieToken_TamperedBind tests that a request is
+// rejected when the bind parameter is replaced with a different value.
+// The HMAC covers the bind parameter, so changing it invalidates the signature.
+func TestSigned_MatchWithError_CookieToken_TamperedBind(t *testing.T) {
 	secret := "secret"
 	bindCookie := "su_secret"
 	logger, _ := zap.NewDevelopment()
@@ -301,25 +332,34 @@ func TestSigned_MatchWithError_CookieToken_TamperedToken(t *testing.T) {
 	}
 	_ = signed.Provision(caddy.Context{})
 
-	// Build a valid URL for "my-session-token"
-	rawURL, _ := buildBoundSignedURL(t, secret, "https://example.com/private/file.txt")
+	rawURL, cookieValue := buildBoundSignedURL(
+		t,
+		secret,
+		"https://example.com/private/file.txt",
+	)
 
-	// Attacker replaces the token param with a fresh encryption of "attacker-value"
-	// and sets the cookie to match — but the signature over the original token param
-	// is now invalid.
-	tamperedToken := encryptToken(t, secret, "attacker-value")
 	u, _ := url.Parse(rawURL)
 	q := u.Query()
-	q.Set("token", tamperedToken)
+
+	// Replace bind with a different value. The original signature still
+	// covers the original bind value, so signature verification must fail.
+	q.Set("bind", "attacker-value")
 	u.RawQuery = q.Encode()
 
 	req, _ := http.NewRequest("GET", u.String(), nil)
 	req.Host = "example.com"
 	req.TLS = &tls.ConnectionState{}
-	req.AddCookie(&http.Cookie{Name: bindCookie, Value: "attacker-value"})
+	req.AddCookie(&http.Cookie{
+		Name:  bindCookie,
+		Value: cookieValue,
+	})
 
 	ok, err := signed.MatchWithError(req)
 	if err == nil || ok {
-		t.Fatalf("expected tampered token to fail signature check, got ok=%v err=%v", ok, err)
+		t.Fatalf(
+			"expected tampered bind to fail signature check, got ok=%v err=%v",
+			ok,
+			err,
+		)
 	}
 }
