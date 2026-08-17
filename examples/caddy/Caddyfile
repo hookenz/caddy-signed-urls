@@ -2,6 +2,8 @@
     log {
         level DEBUG
     }
+
+    debug
 }
 
 :8080 {
@@ -15,12 +17,15 @@
         signed_url {
             secret "secret-key"
             algorithm "sha256"
+
+            # To bind a cookie to the signed URL, uncomment the following line and specify the cookie name.
+            # bind_cookie "download_token"
         }
     }
 
     handle @downloads {
         file_server {
-            root ./
+            root examples/caddy
         }
     }
 
