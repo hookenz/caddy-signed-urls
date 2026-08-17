@@ -230,6 +230,18 @@ func (s *SignedUrl) verifyCookieToken(r *http.Request, query url.Values) (bool, 
 	}
 
 	cookie, err := r.Cookie(s.BindCookie)
+
+	s.logger.Debug("cookie-bound check",
+		zap.String("bind_param", bindParam),
+		zap.String("cookie_name", s.BindCookie),
+		zap.String("cookie_value", func() string {
+			if cookie != nil {
+				return cookie.Value
+			}
+			return "<nil>"
+		}()),
+	)
+
 	if err != nil || cookie.Value == "" {
 		s.logger.Warn("cookie-bound check: missing or empty cookie",
 			zap.String("cookie", s.BindCookie),

@@ -2,7 +2,7 @@ build:
 	xcaddy build --with github.com/hookenz/caddy-signedurls=.
 
 run:
-	cd examples/caddy && ../../caddy run
+	./caddy run --config examples/caddy/Caddyfile
 
 test:
 	go test ./...

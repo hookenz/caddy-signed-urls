@@ -2,6 +2,8 @@
     log {
         level DEBUG
     }
+
+    debug
 }
 
 :8080 {
@@ -15,13 +17,13 @@
         signed_url {
             secret "secret-key"
             algorithm "sha256"
-            bind_cookie "_check"
+            bind_cookie "download_token"
         }
     }
 
     handle @downloads {
         file_server {
-            root ./
+            root examples/caddy
         }
     }
 

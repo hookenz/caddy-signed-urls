@@ -1,73 +1,109 @@
-import time
-import hmac
-import hashlib
-import base64
-from urllib.parse import urlparse, urlunparse, urlencode
+package main
 
-def url_sign(url: str, secret: str, expires_in: int = 3600) -> str:
-    parsed = urlparse(url)
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+)
 
-    now = int(time.time())
-    expires = now + expires_in
+const bindCookieName = "download_token"
 
-    # EXACT Go behavior: ignore original query params entirely.
-    params = {
-        "expires": str(expires),
-    }
+func urlSignWithCookie(rawURL, secret string, expiresIn int) (string, *http.Cookie, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", nil, err
+	}
 
-    # Sorted:
-    sorted_query = urlencode(sorted(params.items()))
+	// Generate random binding value.
+	bindBytes := make([]byte, 10)
+	if _, err := rand.Read(bindBytes); err != nil {
+		return "", nil, err
+	}
 
-    # Sign EXACTLY: path + "?" + sorted_query
-    to_sign = f"{parsed.path}?{sorted_query}"
+	// This exact string goes into the URL.
+	bind := base64.RawURLEncoding.EncodeToString(bindBytes)
 
-    raw_sig = hmac.new(
-        secret.encode(),
-        to_sign.encode(),
-        hashlib.sha256
-    ).digest()
+	// Hash the exact value in the URL.
+	hash := sha256.Sum256([]byte(bind))
+	cookieValue := base64.RawURLEncoding.EncodeToString(hash[:])
 
-    # Go uses RawURLEncoding (no padding)
-    signature = base64.urlsafe_b64encode(raw_sig).rstrip(b"=").decode()
+	expires := time.Now().Unix() + int64(expiresIn)
 
-    # Add signature
-    params["signature"] = signature
+	params := url.Values{}
+	params.Set("expires", strconv.FormatInt(expires, 10))
+	params.Set("bind", bind)
 
-    # Final URL must also have sorted params
-    final_query = urlencode(sorted(params.items()))
+	// Sign exactly: path + "?" + sorted query.
+	sortedQuery := params.Encode()
+	toSign := u.Path + "?" + sortedQuery
 
-    return urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        final_query,
-        parsed.fragment,
-    ))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(toSign))
 
-def main():
-    secret = "secret-key"
-    path = "/downloads/forbidden.html"
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-    print("=== Test 1: Unsigned URL (should fail) ===")
-    unsigned_url = f"http://localhost:8080{path}"
-    print("GET", unsigned_url)
+	// Add signature.
+	params.Set("signature", signature)
+	u.RawQuery = params.Encode()
 
-    r = requests.get(unsigned_url)
-    print("Status:", r.status_code)
-    print("Body:", r.text)
-    print()
+	cookie := &http.Cookie{
+		Name:     bindCookieName,
+		Value:    cookieValue,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
 
-    print("=== Test 2: Signed URL (should succeed) ===")
+	return u.String(), cookie, nil
+}
 
-    signed_path = url_sign(path, secret, 3600)
-    signed_url = f"http://localhost:8080{signed_path}"
+func main() {
+	secret := "secret-key"
+	path := "/downloads/forbidden.html"
 
-    print("Signed URL:", signed_url)
+	fmt.Println("=== Cookie-bound signed URL ===")
 
-    r2 = requests.get(signed_url)
-    print("Status:", r2.status_code)
-    print("Body:", r2.text)
+	signedURL, cookie, err := urlSignWithCookie(
+		"http://localhost:8080"+path,
+		secret,
+		3600,
+	)
+	if err != nil {
+		panic(err)
+	}
 
-if __name__ == "__main__":
-    main()
+	fmt.Println("Signed URL:", signedURL)
+	fmt.Printf("Cookie: %s=%s\n", cookie.Name, cookie.Value)
+
+	client := &http.Client{}
+
+	req, err := http.NewRequest(http.MethodGet, signedURL, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	req.AddCookie(cookie)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Status:", resp.Status)
+	fmt.Println("Response Body:")
+	fmt.Println(string(body))
+}
