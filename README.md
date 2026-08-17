@@ -5,6 +5,7 @@ A Caddy HTTP handler plugin that validates HMAC-SHA256 signed URLs. Perfect for 
 ## Features
 
 - 🔐 **HMAC-SHA256 signature verification** - Industry-standard cryptographic signing
+- 🔐 **Optional SHA256 cookie binding** - Cookie binding to prevent URL sharing to an unuthorized client
 - ⏰ **Optional expiration** - Create time-limited URLs that automatically expire
 - 🎯 **Flexible configuration** - Support for query parameters and HTTP headers
 
@@ -315,11 +316,12 @@ curl -H "X-Signature: abc123..." https://api.example.com/api/internal/data
 ### Signature Validation Process
 
 1. **Extract signature** - Check query parameter or HTTP header
-2. **Parse timestamps** - Validate `expires` if present
-4. **Build signed string** - Reconstruct path + sorted query params (minus signature)
-5. **Calculate HMAC** - Generate expected signature using secret key
-6. **Compare** - Use constant-time comparison to prevent timing attacks
-7. **Allow or deny** - Return 200 OK or 401 Unauthorized
+2. **Build signed string** - Reconstruct path + sorted query params (minus signature)
+3. **Calculate HMAC** - Generate expected signature using secret key
+4. **Compare** - Use constant-time comparison to prevent timing attacks
+5. **Parse timestamps** - Validate `expires` if present
+6. **Cookie verify** - Validate `bind_cookie` if present
+6. **Allow or deny** - Return 200 OK or 401 Unauthorized
 
 ### What Gets Signed
 
