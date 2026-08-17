@@ -1,14 +1,11 @@
 package signed
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -132,26 +129,6 @@ func TestSigned_MatchWithError_InvalidSignature(t *testing.T) {
 	if err == nil || ok {
 		t.Fatalf("expected invalid signature error, got ok=%v err=%v", ok, err)
 	}
-}
-
-// helper: encrypt a plaintext token the same way the signing tool would
-func encryptToken(t *testing.T, secret, plaintext string) string {
-	t.Helper()
-	key := sha256.Sum256([]byte(secret))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		t.Fatal(err)
-	}
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.RawURLEncoding.EncodeToString(ciphertext)
 }
 
 func generateCookieAndHash() (string, string, error) {
