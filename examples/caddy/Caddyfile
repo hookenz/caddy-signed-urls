@@ -19,7 +19,7 @@
             algorithm "sha256"
 
             # To bind a cookie to the signed URL, uncomment the following line and specify the cookie name.
-            # bind_cookie "download_token"
+            bind_cookie "download_token"
         }
     }
 

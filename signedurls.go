@@ -232,12 +232,12 @@ func (s *SignedUrl) verifyCookieToken(r *http.Request, query url.Values) (bool, 
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("missing cookie"))
 	}
 
-	// Hash the exact bind value from the URL.
-	hash := sha256.Sum256([]byte(bindParam))
-	expectedCookie := base64.RawURLEncoding.EncodeToString(hash[:])
+	// Hash the exact cookie value
+	hash := sha256.Sum256([]byte(cookie.Value))
+	expectedHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	// Compare the hash with the cookie value.
-	if expectedCookie != cookie.Value {
+	// Compare the hash with the bind parameter.
+	if expectedHash != bindParam {
 		s.logger.Warn("cookie-bound check: cookie mismatch")
 		return false, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("cookie token mismatch"))
 	}

@@ -53,6 +53,7 @@ signed_url "your-secret-key"
 signed_url {
     secret "your-secret-key"       # Required
     algorithm "sha265"             # Optional, default: "sha256", options: sha265, sha384, sha512
+    bind_cookie "cookie_name"      # Optional
 }
 ```
 
@@ -62,6 +63,22 @@ signed_url {
 |--------|------|---------|-------------|
 | `secret` | string | (required) | Secret key for HMAC signing |
 | `algorithm` | string | `sha256` | The signature algorithm used by the signer |
+| `bind_cookie`| string | unset | Configures the name of the HTTP cookie used to bind a signed URL to a specific client. When configured, the cookie value is included in the signature, so the signed URL can only be used by a client with the corresponding cookie. |
+
+
+### Cookie Binding
+
+By default, a signed URL can be used by anyone who has the URL. This is useful when the URL itself is intended to grant access to a resource.
+
+bind_cookie provides an additional layer of protection by binding the signed URL to a specific client.  When configured, the named cookie is expected to be present in the request.  It's value should be a suitably random string. The URL should contain the query parameter "bind=SHA256(cookie val)`.
+
+This means that copying a signed URL to another client is not sufficient to access the resource. The other client must also have the corresponding cookie value set.
+
+This can be useful when:
+
+Preventing signed URLs from being shared between clients.
+Restricting downloads to an authenticated or authorized session without putting the session information in the URL.
+Adding a second factor to URL-based access, where possession of both the signed URL and the cookie is required.
 
 ## Generating Signed URLs
 
@@ -289,6 +306,9 @@ Client usage:
 ```bash
 curl -H "X-Signature: abc123..." https://api.example.com/api/internal/data
 ```
+
+**For more complete examples, see the examples folder.**
+
 
 ## How It Works
 

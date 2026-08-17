@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -13,32 +12,27 @@ import (
 	"time"
 )
 
-const bindCookieName = "download_token"
+const (
+	bindCookieName = "download_token"
+	bindParamName  = "bind"
+)
 
-func urlSignWithCookie(rawURL, secret string, expiresIn int) (string, *http.Cookie, error) {
+func generateSignedUrl(rawURL, secret string, expiresIn int, bindCookie *http.Cookie) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
-	// Generate random binding value.
-	bindBytes := make([]byte, 10)
-	if _, err := rand.Read(bindBytes); err != nil {
-		return "", nil, err
-	}
+	// Hash the cookie value before including it in the URL.
+	hash := sha256.Sum256([]byte(bindCookie.Value))
+	cookieHash := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	// This exact string goes into the URL.
-	bind := base64.RawURLEncoding.EncodeToString(bindBytes)
-
-	// Hash the exact value in the URL.
-	hash := sha256.Sum256([]byte(bind))
-	cookieValue := base64.RawURLEncoding.EncodeToString(hash[:])
-
+	// Set an expiration time
 	expires := time.Now().Unix() + int64(expiresIn)
 
 	params := url.Values{}
 	params.Set("expires", strconv.FormatInt(expires, 10))
-	params.Set("bind", bind)
+	params.Set("bind", cookieHash)
 
 	// Sign exactly: path + "?" + sorted query.
 	sortedQuery := params.Encode()
@@ -53,16 +47,7 @@ func urlSignWithCookie(rawURL, secret string, expiresIn int) (string, *http.Cook
 	params.Set("signature", signature)
 	u.RawQuery = params.Encode()
 
-	cookie := &http.Cookie{
-		Name:     bindCookieName,
-		Value:    cookieValue,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	}
-
-	return u.String(), cookie, nil
+	return u.String(), nil
 }
 
 func main() {
@@ -71,11 +56,17 @@ func main() {
 
 	fmt.Println("=== Cookie-bound signed URL ===")
 
-	signedURL, cookie, err := urlSignWithCookie(
-		"http://localhost:8080"+path,
-		secret,
-		3600,
-	)
+	// create the cookie with a random value
+	cookie := &http.Cookie{
+		Name:     bindCookieName,
+		Value:    "random-value", // In a real application, this should be a securely generated random value.
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+
+	signedURL, err := generateSignedUrl("http://localhost:8080"+path, secret, 3600, cookie)
 	if err != nil {
 		panic(err)
 	}
