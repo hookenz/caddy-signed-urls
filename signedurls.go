@@ -41,14 +41,10 @@ type SignedUrl struct {
 	Algorithm string `json:"algorithm,omitempty"`
 
 	// BindCookie enables cookie-bound token verification when set.
-	// The URL must carry a "token" query parameter containing an AES-GCM
-	// encrypted payload. Once decrypted, this payload must match the value
+	// The URL must carry a "bind" query parameter containing an SHA256 hash
 	// of the specified cookie present in the HTTP request headers.
-	//
-	// Requires Secret to be set.
 	BindCookie string `json:"bind_cookie,omitempty"`
 
-	aesKey []byte // 32-byte AES-256 key derived from Secret
 	logger *zap.Logger
 }
 
@@ -67,13 +63,6 @@ func (s *SignedUrl) Provision(ctx caddy.Context) error {
 
 	if !slices.Contains(validHashAlg, s.Algorithm) {
 		return fmt.Errorf("unsupported hash algorithm: %s", s.Algorithm)
-	}
-
-	// Derive a 32-byte AES key from the secret using SHA-256.
-	// This is done at provision time so it's not repeated per-request.
-	if s.BindCookie != "" {
-		h := sha256.Sum256([]byte(s.Secret))
-		s.aesKey = h[:]
 	}
 
 	return nil
