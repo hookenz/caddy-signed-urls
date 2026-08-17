@@ -67,7 +67,7 @@ func (SignedUrl) CaddyModule() caddy.ModuleInfo {
 func (s *SignedUrl) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger()
 
-	if slices.Contains(validHashAlg, s.Algorithm) {
+	if !slices.Contains(validHashAlg, s.Algorithm) {
 		return fmt.Errorf("unsupported hash algorithm: %s", s.Algorithm)
 	}
 
