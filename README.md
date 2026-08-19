@@ -521,5 +521,5 @@ Contributions are welcome! Please:
 ## Support
 
 - 📖 [Documentation](https://github.com/hookenz/caddy-signedurls)
-- 🐛 [Issue Tracker](https://github.com/github.com/hookenz/caddy-signedurls/issues)
+- 🐛 [Issue Tracker](https://github.com/hookenz/caddy-signed-urls/issues)
 - 💬 [Caddy Community Forum](https://caddy.community/)
